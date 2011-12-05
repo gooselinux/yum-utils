@@ -1,0 +1,20 @@
+commit 7b64bfa4f38fa382e00eae2f4a30263707ae81a3
+Author: James Antill <james@and.org>
+Date:   Fri May 21 15:31:24 2010 -0400
+
+    Have yum-builddep just call .install(), deals with updates and multilib.
+
+diff --git a/yum-builddep.py b/yum-builddep.py
+index 70747b1..77aa542 100755
+--- a/yum-builddep.py
++++ b/yum-builddep.py
+@@ -186,8 +186,7 @@ class YumBuildDep(YumUtilBase):
+                 try:
+                     pkg = self.returnPackageByDep(dep)
+                     self.logger.info(' --> %s' % pkg)
+-                    if not self.rpmdb.installed(name=pkg.name):
+-                        self.tsInfo.addInstall(pkg)
++                    self.install(pkg)
+                     
+                 except yum.Errors.YumBaseError, e:
+                     self.logger.error("Error: %s" % e)

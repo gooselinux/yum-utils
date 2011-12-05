@@ -1,0 +1,1681 @@
+From bc3d026acd1c8f332d024bf9a9918da6451c8c07 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ville=20Skytt=C3=A4?= <ville.skytta@iki.fi>
+Date: Tue, 9 Feb 2010 21:35:15 +0200
+Subject: [PATCH 01/24] Make --alldeps the default in repoquery.
+
+--alldeps is what people really almost always want, but fail to
+specify for some reason.  --exactdeps can be used to get the previous
+default of exact matching.
+---
+ docs/repoquery.1 |   10 +++++++---
+ repoquery.py     |    6 ++++--
+ yum-utils.bash   |    2 +-
+ 3 files changed, 12 insertions(+), 6 deletions(-)
+
+diff --git a/docs/repoquery.1 b/docs/repoquery.1
+index 1056c80..e5ed8b7 100644
+--- a/docs/repoquery.1
++++ b/docs/repoquery.1
+@@ -107,8 +107,12 @@ Query all packages that provide CAPABILITY.
+ .IP "\fB\-\-whatrequires CAPABILITY\fP"
+ Query all packages that require CAPABILITY.
+ .IP "\fB\-\-alldeps\fP"
+-When used with --whatrequires, use both automatic and manual dependencies
+-for the query.
++When used with --whatrequires, look for non-explicit dependencies in
++addition to explicit ones (e.g. files and Provides in addition to
++package names).  This is the default.
++.IP "\fB\-\-exactdeps\fP"
++When used with --whatrequires, search for dependencies only exactly as given.
++This is effectively the opposite of --alldeps.
+ .IP "\fB\-\-recursive\fP"
+ When used with --whatrequires, query packages recursively.
+ .IP "\fB\-\-archlist=ARCH1[,ARCH2...]\fP"
+@@ -147,7 +151,7 @@ Query groups instead of packages.
+ .IP "List all packages whose name contains 'perl':"
+ \fBrepoquery '*perl*'\fP
+ .IP "List all packages depending on openssl:"
+-\fBrepoquery --whatrequires --alldeps openssl\fP 
++\fBrepoquery --whatrequires openssl\fP 
+ .IP "List all package names and the repository they come from, nicely formatted:"
+ \fBrepoquery -a --qf "%-20{repoid} %{name}"\fP
+ .IP "List name and summary of all available updates (if any), nicely formatted:"
+diff --git a/repoquery.py b/repoquery.py
+index 2e3004b..3e2c18a 100755
+--- a/repoquery.py
++++ b/repoquery.py
+@@ -647,8 +647,10 @@ def main(args):
+                       help="operate on corresponding source RPM")
+     parser.add_option("--resolve", action="store_true",
+                       help="resolve capabilities to originating package(s)")
+-    parser.add_option("--alldeps", action="store_true",
+-                      help="check non-explicit dependencies (files and Provides:) as well")
++    parser.add_option("--alldeps", action="store_true", default=True,
++                      help="check non-explicit dependencies (files and Provides:) as well, defaults to on")
++    parser.add_option("--exactdeps", dest="alldeps", action="store_false",
++                      help="check dependencies exactly as given, opposite of --alldeps")
+     parser.add_option("--recursive", action="store_true",
+                       help="recursively query for packages (for whatrequires)")
+     parser.add_option("--whatprovides", action="store_true",
+diff --git a/yum-utils.bash b/yum-utils.bash
+index d8ca1dd..7df1b49 100644
+--- a/yum-utils.bash
++++ b/yum-utils.bash
+@@ -210,7 +210,7 @@ _yu_repoquery()
+     COMPREPLY=( $( compgen -W '--version --help --list --info --file
+         --queryformat --groupmember --all --requires --provides --obsoletes
+         --conflicts --changelog --location --nevra --envra --nvr --source
+-        --srpm --resolve --alldeps --recursive --whatprovides --whatrequires
++        --srpm --resolve --exactdeps --recursive --whatprovides --whatrequires
+         --whatobsoletes --whatconflicts --group --grouppkgs --archlist
+         --pkgnarrow --show-duplicates --repoid --enablerepo --disablerepo
+         --repofrompath --plugins --quiet --verbose --cache --tempcache
+-- 
+1.6.6.1
+
+
+From efc35f8de0475db1bfe27eb04a93f571a23ce8b7 Mon Sep 17 00:00:00 2001
+From: Seth Vidal <skvidal@fedoraproject.org>
+Date: Mon, 15 Feb 2010 22:01:50 -0500
+Subject: [PATCH 02/24] make repoquery pass in the whole string not just split for names
+
+---
+ repoquery.py |    5 +----
+ 1 files changed, 1 insertions(+), 4 deletions(-)
+
+diff --git a/repoquery.py b/repoquery.py
+index 2e3004b..c2b8c03 100755
+--- a/repoquery.py
++++ b/repoquery.py
+@@ -554,10 +554,7 @@ class YumBaseQuery(yum.YumBase):
+                     provs.extend(pkg.files())
+ 
+             for prov in provs:
+-                # Only look at the providing name, not the whole version. This 
+-                # might occasionally give some false positives but that's 
+-                # better than missing ones which it had previously
+-                for pkg in self.pkgSack.searchRequires(prov.split()[0]):
++                for pkg in self.pkgSack.searchRequires(prov):
+                     pkgs[pkg.pkgtup] = pkg
+                     if self.options.recursive:
+                         require_recursive(pkg.name)
+-- 
+1.6.6.1
+
+
+From 493450d26d04e3f61470e21f7db717e7d98e3d57 Mon Sep 17 00:00:00 2001
+From: Seth Vidal <skvidal@fedoraproject.org>
+Date: Thu, 25 Feb 2010 12:58:35 -0500
+Subject: [PATCH 03/24] move around where we query for pkgs from sackops/prcos and what happens if no special output format
+ is specified in repoquery.
+
+makes:
+repoquery -qfi /bin/bash output -qi output rather than -q output.
+---
+ repoquery.py |   19 +++++++++++--------
+ 1 files changed, 11 insertions(+), 8 deletions(-)
+
+diff --git a/repoquery.py b/repoquery.py
+index 0a56430..225a4cb 100755
+--- a/repoquery.py
++++ b/repoquery.py
+@@ -504,10 +504,21 @@ class YumBaseQuery(yum.YumBase):
+         else:
+             if self.options.srpm:
+                 pkgs = self.matchSrcPkgs(items)
++
+             else:
+                 pkgs = self.matchPkgs(items)
++                for prco in items:
++                    for oper in self.sackops:
++                        try:
++                            for p in self.doQuery(oper, prco): 
++                                if p:
++                                    pkgs.append(p)
++                        except queryError, e:
++                            self.logger.error( e.msg)
+ 
+         for pkg in pkgs:
++            if not self.pkgops:
++                print to_unicode(pkg)
+             for oper in self.pkgops:
+                 try:
+                     out = pkg.doQuery(oper)
+@@ -515,14 +526,6 @@ class YumBaseQuery(yum.YumBase):
+                         print to_unicode(out)
+                 except queryError, e:
+                     self.logger.error( e.msg)
+-        for prco in items:
+-            for oper in self.sackops:
+-                try:
+-                    for p in self.doQuery(oper, prco): 
+-                        if p:
+-                            print p
+-                except queryError, e:
+-                    self.logger.error( e.msg)
+ 
+     def doQuery(self, method, *args, **kw):
+         return getattr(self, "fmt_%s" % method)(*args, **kw)
+-- 
+1.6.6.1
+
+
+From f0bee60c3fc81325e547d0f8bf42591368d18ee4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ville=20Skytt=C3=A4?= <ville.skytta@iki.fi>
+Date: Sat, 27 Feb 2010 14:21:02 +0200
+Subject: [PATCH 04/24] Fix --releasever.
+
+---
+ repoquery.py |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/repoquery.py b/repoquery.py
+index 225a4cb..eb524f3 100755
+--- a/repoquery.py
++++ b/repoquery.py
+@@ -774,7 +774,7 @@ def main(args):
+ 
+     # silence initialisation junk from modules etc unless verbose mode
+     initnoise = (not opts.quiet) * 2
+-    repoq.releasever = opts.releasever
++    repoq.preconf.releasever = opts.releasever
+     if opts.conffile:
+         repoq.doConfigSetup(fn=opts.conffile, debuglevel=initnoise, init_plugins=opts.plugins)
+     else:
+-- 
+1.6.6.1
+
+
+From b15cb0760c864cadc5029474d07cc38882ec1815 Mon Sep 17 00:00:00 2001
+From: Seth Vidal <skvidal@fedoraproject.org>
+Date: Mon, 1 Mar 2010 14:58:27 -0500
+Subject: [PATCH 05/24] catch all yum errors and valueError (which is coming from yum.config.py :()
+ generally this just means we'll get less ABRT errors and more reports from users
+
+(I hope)
+---
+ repoclosure.py |    7 ++++++-
+ 1 files changed, 6 insertions(+), 1 deletions(-)
+
+diff --git a/repoclosure.py b/repoclosure.py
+index 5076fe8..8c27cdd 100755
+--- a/repoclosure.py
++++ b/repoclosure.py
+@@ -273,5 +273,10 @@ def main():
+             my.logger.info('     %s' % req)
+ 
+ if __name__ == "__main__":
+-    main()
++    try:
++        main()
++    except (yum.Errors.YumBaseError, ValueError), e:
++        print >> sys.stderr, str(e)
++        sys.exit(1)
++        
+         
+-- 
+1.6.6.1
+
+
+From 30e58c85e07abe939ff3c9af017f8355f81a4f32 Mon Sep 17 00:00:00 2001
+From: Seth Vidal <skvidal@fedoraproject.org>
+Date: Mon, 1 Mar 2010 15:27:57 -0500
+Subject: [PATCH 06/24] setup some repo features that make sense for the debug repos to
+ inherit from the non-debug repos when we add them
+
+---
+ debuginfo-install.py |    5 +++++
+ 1 files changed, 5 insertions(+), 0 deletions(-)
+
+diff --git a/debuginfo-install.py b/debuginfo-install.py
+index 242be65..dc41b5f 100755
+--- a/debuginfo-install.py
++++ b/debuginfo-install.py
+@@ -90,6 +90,11 @@ class DebugInfoInstall(YumUtilBase):
+                 r.enable()
+                 try:
+                     self.doRepoSetup(thisrepo=r.id)
++                    for opt in ['repo_gpgcheck', 'gpgcheck', 'cost', 
++                                'skip_if_unavailable']:
++                        if hasattr(r, opt):
++                            setattr(r, opt, getattr(repo, opt))
++                        
+                 except yum.Errors.RepoError, e:
+                     self.logger.critical("Could not access repo %s error was: %s" %
+                                         (r.id, to_unicode(str(e))))
+-- 
+1.6.6.1
+
+
+From c65516666fdca02f6f1500134d8a6832176320c7 Mon Sep 17 00:00:00 2001
+From: James Antill <james@and.org>
+Date: Mon, 1 Mar 2010 22:57:07 -0500
+Subject: [PATCH 07/24] Add yum-utils to the run_with_packages when running y-c-t
+
+---
+ yum-complete-transaction.py |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/yum-complete-transaction.py b/yum-complete-transaction.py
+index ba41a51..0a9f5df 100755
+--- a/yum-complete-transaction.py
++++ b/yum-complete-transaction.py
+@@ -161,6 +161,7 @@ class YumCompleteTransaction(YumUtilBase):
+         # populate the ts
+         # run it
+ 
++        self.run_with_package_names.add('yum-utils')
+         times = []
+         for thistime in find_unfinished_transactions(self.conf.persistdir):
+             if thistime.endswith('disabled'):
+-- 
+1.6.6.1
+
+
+From 37454f631436624cfeda72496757c6206420cc78 Mon Sep 17 00:00:00 2001
+From: James Antill <james@and.org>
+Date: Mon, 1 Mar 2010 22:58:53 -0500
+Subject: [PATCH 08/24] Add yum-utils to the run_with_packages when running pkg-cleanup
+
+---
+ package-cleanup.py |    2 ++
+ 1 files changed, 2 insertions(+), 0 deletions(-)
+
+diff --git a/package-cleanup.py b/package-cleanup.py
+index 3f5507f..ca4aa9a 100755
+--- a/package-cleanup.py
++++ b/package-cleanup.py
+@@ -335,6 +335,7 @@ class PackageCleanup(YumUtilBase):
+                 sys.exit(100)
+                 
+             self._remove_old_kernels(opts.kernelcount, opts.keepdevel)
++            self.run_with_package_names.add('yum-utils')
+             self.buildTransaction()
+             if len(self.tsInfo) < 1:
+                 print 'No old kernels to remove'
+@@ -371,6 +372,7 @@ class PackageCleanup(YumUtilBase):
+             if opts.noscripts:
+                 self.conf.tsflags.append('noscripts')
+             self._remove_old_dupes()
++            self.run_with_package_names.add('yum-utils')
+             self.buildTransaction()
+             if len(self.tsInfo) < 1:
+                 print 'No duplicates to remove'
+-- 
+1.6.6.1
+
+
+From 94b52cb5499b47cb4e2b64c8a2e4e7863b2e965e Mon Sep 17 00:00:00 2001
+From: Tim Lauridsen <timlau@fedoraproject.org>
+Date: Tue, 2 Mar 2010 12:18:31 +0100
+Subject: [PATCH 09/24] Make repoclosure work with relative paths, like ./myrepo or just .
+
+---
+ repoclosure.py |    4 ++--
+ 1 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/repoclosure.py b/repoclosure.py
+index 8c27cdd..9bfc007 100755
+--- a/repoclosure.py
++++ b/repoclosure.py
+@@ -60,7 +60,7 @@ def parseArgs():
+     parser.add_option("-n", "--newest", default=0, action="store_true",
+                       help="check only the newest packages in the repos")
+     parser.add_option("--repofrompath", action="append",
+-                      help="specify repoid & paths of additional repositories - unique repoid and complete path required, can be specified multiple times. Example. --repofrompath=myrepo,/path/to/repo")
++                      help="specify repoid & paths of additional repositories - unique repoid and path required, can be specified multiple times. Example. --repofrompath=myrepo,/path/to/repo")
+     parser.add_option("-p", "--pkg", action="append",
+                       help="check closure for this package only")
+     (opts, args) = parser.parse_args()
+@@ -195,12 +195,12 @@ def main():
+         # setup the fake repos
+         for repo in opts.repofrompath:
+             repoid,repopath = tuple(repo.split(','))
++            repopath = os.path.abspath(repopath)
+             if repopath[0] == '/':
+                 baseurl = 'file://' + repopath
+             else:
+                 baseurl = repopath
+                 
+-            repopath = os.path.normpath(repopath)
+             newrepo = yum.yumRepo.YumRepository(repoid)
+             newrepo.name = repopath
+             newrepo.baseurl = baseurl
+-- 
+1.6.6.1
+
+
+From 7cece362ea4c2f9c6619339775adb5975e022275 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ville=20Skytt=C3=A4?= <ville.skytta@iki.fi>
+Date: Wed, 10 Mar 2010 21:13:00 +0200
+Subject: [PATCH 10/24] Add bash completion for yumdb.
+
+---
+ yum-utils.bash |   27 +++++++++++++++++++++++++++
+ 1 files changed, 27 insertions(+), 0 deletions(-)
+
+diff --git a/yum-utils.bash b/yum-utils.bash
+index 7df1b49..1ff3fbd 100644
+--- a/yum-utils.bash
++++ b/yum-utils.bash
+@@ -218,6 +218,33 @@ _yu_repoquery()
+ } &&
+ complete -F _yu_repoquery -o filenames repoquery repoquery.py
+ 
++# yumdb
++_yu_yumdb()
++{
++    COMPREPLY=()
++
++    case "$3" in
++        -h|--help|-version)
++            return 0
++            ;;
++        -c|--config)
++            COMPREPLY=( $( compgen -f -o plusdirs -X '!*.conf' -- "$2" ) )
++            return 0
++            ;;
++        shell)
++            COMPREPLY=( $( compgen -f -o plusdirs -- "$2" ) )
++            return 0
++            ;;
++    esac
++
++    if [ $COMP_CWORD -le 1 ] ; then
++        COMPREPLY=( $( compgen -W 'get set del rename rename-force search
++            exist unset info shell --version --help --noplugins --config' \
++                -- "$2" ) )
++    fi
++} &&
++complete -F _yu_yumdb -o filenames yumdb yumdb.py
++
+ # Local variables:
+ # mode: shell-script
+ # sh-basic-offset: 4
+-- 
+1.6.6.1
+
+
+From 421ba27da401618dd10d1a31801df01b89277585 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ville=20Skytt=C3=A4?= <ville.skytta@iki.fi>
+Date: Fri, 26 Mar 2010 22:58:45 +0200
+Subject: [PATCH 11/24] Complete on repomanage.py, package-cleanup.py, and verifytree.py.
+
+---
+ yum-utils.bash |    6 +++---
+ 1 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/yum-utils.bash b/yum-utils.bash
+index 1ff3fbd..308d82b 100644
+--- a/yum-utils.bash
++++ b/yum-utils.bash
+@@ -23,7 +23,7 @@ _yu_repomanage()
+ 
+     COMPREPLY=( $( compgen -d -- "$2" ) )
+ } &&
+-complete -F _yu_repomanage -o filenames repomanage
++complete -F _yu_repomanage -o filenames repomanage repomanage.py
+ 
+ # package-cleanup
+ _yu_package_cleanup()
+@@ -49,7 +49,7 @@ _yu_package_cleanup()
+         --cleandupes --oldkernels --count --keepdevel -c --queryformat' \
+             -- "$2" ) )
+ } &&
+-complete -F _yu_package_cleanup -o filenames package-cleanup
++complete -F _yu_package_cleanup -o filenames package-cleanup package-cleanup.py
+ 
+ # verifytree
+ _yu_verifytree()
+@@ -70,7 +70,7 @@ _yu_verifytree()
+ 
+     COMPREPLY=( $( compgen -d -- "$2" ) )
+ } &&
+-complete -F _yu_verifytree -o filenames verifytree
++complete -F _yu_verifytree -o filenames verifytree verifytree.py
+ 
+ # repo-graph
+ _yu_repo_graph()
+-- 
+1.6.6.1
+
+
+From 25ceb993e0bda203804c3e8241df5d1942eab303 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ville=20Skytt=C3=A4?= <ville.skytta@iki.fi>
+Date: Tue, 30 Mar 2010 23:04:44 +0300
+Subject: [PATCH 12/24] Use "in" instead of has_key.
+
+---
+ package-cleanup.py                                 |    2 +-
+ plugins/changelog/changelog.py                     |    4 ++--
+ .../fastestmirror-asyncore.py                      |    2 +-
+ plugins/fedorakmod/fedorakmod.py                   |    9 +++++----
+ plugins/fs-snapshot/fs-snapshot.py                 |    2 +-
+ .../post-transaction-actions.py                    |    2 +-
+ plugins/priorities/priorities.py                   |   10 +++++-----
+ plugins/protectbase/protectbase.py                 |    2 +-
+ plugins/remove-with-leaves/remove-with-leaves.py   |    2 +-
+ plugins/upgrade-helper/upgrade-helper.py           |    8 ++++----
+ repo-graph.py                                      |    4 ++--
+ repo-rss.py                                        |    2 +-
+ repoclosure.py                                     |    6 +++---
+ repodiff.py                                        |    2 +-
+ repomanage.py                                      |    4 ++--
+ repoquery.py                                       |    6 +++---
+ reposync.py                                        |    2 +-
+ repotrack.py                                       |    5 ++---
+ yum-debug-dump.py                                  |    2 +-
+ 19 files changed, 38 insertions(+), 38 deletions(-)
+
+diff --git a/package-cleanup.py b/package-cleanup.py
+index ca4aa9a..c796286 100755
+--- a/package-cleanup.py
++++ b/package-cleanup.py
+@@ -129,7 +129,7 @@ class PackageCleanup(YumUtilBase):
+             for (req,flags,ver)  in po.requires:
+                     
+                 if req.startswith('rpmlib'): continue # ignore rpmlib deps
+-                if not providers.has_key((req,flags,ver)):
++                if (req,flags,ver) not in providers:
+                     resolve_sack = self.rpmdb.whatProvides(req,flags,ver)
+                 else:
+                     resolve_sack = providers[(req,flags,ver)]
+diff --git a/plugins/changelog/changelog.py b/plugins/changelog/changelog.py
+index 250326f..007ac6d 100644
+--- a/plugins/changelog/changelog.py
++++ b/plugins/changelog/changelog.py
+@@ -58,7 +58,7 @@ def srpmname(pkg):
+ def _show_changes_changelog(conduit, srpms):
+     for name in sorted(srpms.keys()):
+         rpms = []
+-        if origpkgs.has_key(name):
++        if name in origpkgs:
+             for rpm in srpms[name]:
+                 rpms.append("%s" % rpm)
+             done = False
+@@ -85,7 +85,7 @@ def show_changes(conduit, msg):
+         if not tsmem.updates:
+             continue
+         name = srpmname(tsmem.po)
+-        if srpms.has_key(name):
++        if name in srpms:
+             srpms[name].append(tsmem.po)
+         else:
+             srpms[name] = [tsmem.po]
+diff --git a/plugins/fastestmirror/fastestmirror-asyncore/fastestmirror-asyncore.py b/plugins/fastestmirror/fastestmirror-asyncore/fastestmirror-asyncore.py
+index 8129e2c..11c394f 100644
+--- a/plugins/fastestmirror/fastestmirror-asyncore/fastestmirror-asyncore.py
++++ b/plugins/fastestmirror/fastestmirror-asyncore/fastestmirror-asyncore.py
+@@ -135,7 +135,7 @@ def postreposetup_hook(conduit):
+     repomirrors = {}
+     repos = conduit.getRepos()
+     for repo in repos.listEnabled():
+-        if not repomirrors.has_key(str(repo)):
++        if str(repo) not in repomirrors:
+             repomirrors[str(repo)] = FastestMirror(repo.urls).get_mirrorlist()
+         if exclude:
+             for mirror in repomirrors[str(repo)]:
+diff --git a/plugins/fedorakmod/fedorakmod.py b/plugins/fedorakmod/fedorakmod.py
+index ab9f673..b3aed61 100644
+--- a/plugins/fedorakmod/fedorakmod.py
++++ b/plugins/fedorakmod/fedorakmod.py
+@@ -140,7 +140,7 @@ def resolveVersions(packageList):
+             continue
+         po.kmodName = name[0]
+ 
+-        if not pdict.has_key(kernel):
++        if kernel not in pdict:
+             pdict[kernel] = [po]
+         else:
+             sameName = None
+@@ -208,7 +208,7 @@ def pinKernels(c, newKernels, installedKernels, modules):
+                str(runningKernel))
+ 
+     table = resolveVersions(modules)
+-    if not table.has_key(runningKernel):
++    if runningKernel not in table:
+         c.info(2, "Trying to mimic %s which has no kernel modules installed" \
+                % str(runningKernel))
+         return
+@@ -217,7 +217,7 @@ def pinKernels(c, newKernels, installedKernels, modules):
+     c.info(2, "kmods in %s: %s" % (str(runningKernel), str(names)))
+     for kpo in newKernels:
+         prov = getKernelProvides(kpo)[0]
+-        if table.has_key(prov):
++        if prov in table:
+             kmods = [ po.kmodName for po in table[prov] ]
+         else:
+             kmods = []
+@@ -255,7 +255,8 @@ def installAllKmods(c, avaModules, modules, kernels):
+     table = resolveVersions(interesting + modules)
+     
+     for kernel in [ getKernelProvides(k)[0] for k in kernels ]:
+-        if not table.has_key(kernel): continue
++        if kernel not in table:
++            continue
+         for po in table[kernel]:
+             if po not in modules:
+                 c.getTsInfo().addTrueInstall(po)
+diff --git a/plugins/fs-snapshot/fs-snapshot.py b/plugins/fs-snapshot/fs-snapshot.py
+index f0ce051..a83156d 100644
+--- a/plugins/fs-snapshot/fs-snapshot.py
++++ b/plugins/fs-snapshot/fs-snapshot.py
+@@ -178,7 +178,7 @@ def _create_snapshot(conduit, snapshot_tag, volume):
+     """
+     if volume["fstype"] == "btrfs":
+         return _create_btrfs_snapshot(conduit, snapshot_tag, volume)
+-    elif volume.has_key(lvm_key):
++    elif lvm_key in volume:
+         return _create_lvm_snapshot(conduit, snapshot_tag, volume)
+ 
+     return 0
+diff --git a/plugins/post-transaction-actions/post-transaction-actions.py b/plugins/post-transaction-actions/post-transaction-actions.py
+index 7b94b90..b4da1ce 100644
+--- a/plugins/post-transaction-actions/post-transaction-actions.py
++++ b/plugins/post-transaction-actions/post-transaction-actions.py
+@@ -62,7 +62,7 @@ def parse_actions(ddir, conduit):
+ 
+ def _get_installed_po(rpmdb, pkgtup):
+     (n,a,e,v,r) = pkgtup
+-    if _just_installed.has_key(pkgtup):
++    if pkgtup in _just_installed:
+         return _just_installed[pkgtup]
+     return rpmdb.searchNevra(name=n, arch=a, epoch=e, ver=v, rel=r)[0]
+ 
+diff --git a/plugins/priorities/priorities.py b/plugins/priorities/priorities.py
+index 3650736..ddee1cb 100644
+--- a/plugins/priorities/priorities.py
++++ b/plugins/priorities/priorities.py
+@@ -134,11 +134,11 @@ def exclude_hook(conduit):
+ 
+                 if only_samearch:
+                     key = "%s.%s" % (po.name,po.arch)
+-                    if pkg_priorities.has_key(key) and pkg_priorities[key] < repo.priority:
++                    if key in pkg_priorities and pkg_priorities[key] < repo.priority:
+                         delPackage = True
+                 else:
+                     key = "%s" % po.name
+-                    if pkg_priorities_archless.has_key(key) and pkg_priorities_archless[key] < repo.priority:
++                    if key in pkg_priorities_archless and pkg_priorities_archless[key] < repo.priority:
+                         delPackage = True
+ 
+                 if delPackage:
+@@ -150,11 +150,11 @@ def exclude_hook(conduit):
+                 # one of the obsoleted packages is not available through
+                 # a repo with a higher priority. If so, remove this package.
+                 if check_obsoletes:
+-                    if obsoletes.has_key(po.pkgtup):
++                    if po.pkgtup in obsoletes:
+                         obsolete_pkgs = obsoletes[po.pkgtup]
+                         for obsolete_pkg in obsolete_pkgs:
+                             pkg_name = obsolete_pkg[0]
+-                            if pkg_priorities_archless.has_key(pkg_name) and pkg_priorities_archless[pkg_name] < repo.priority:
++                            if pkg_name in pkg_priorities_archless and pkg_priorities_archless[pkg_name] < repo.priority:
+                                 conduit.delPackage(po)
+                                 cnt += 1
+                                 conduit.info(3," --> %s from %s excluded (priority)" % (po,po.repoid))
+@@ -173,5 +173,5 @@ def _pkglist_to_dict(pl, priority, addArch = False):
+ 
+ def _mergeprioritydicts(dict1, dict2):
+     for package in dict2.keys():
+-        if not dict1.has_key(package) or dict2[package] < dict1[package]:
++        if package not in dict1 or dict2[package] < dict1[package]:
+             dict1[package] = dict2[package]
+diff --git a/plugins/protectbase/protectbase.py b/plugins/protectbase/protectbase.py
+index 441cdba..37a39dd 100644
+--- a/plugins/protectbase/protectbase.py
++++ b/plugins/protectbase/protectbase.py
+@@ -55,7 +55,7 @@ def exclude_hook(conduit):
+                     continue
+ 
+                 for po in conduit.getPackages(repo2):
+-                    if repo1pkgs.has_key(po.name):
++                    if po.name in repo1pkgs:
+                         conduit.delPackage(po)
+                         cnt += 1
+ 
+diff --git a/plugins/remove-with-leaves/remove-with-leaves.py b/plugins/remove-with-leaves/remove-with-leaves.py
+index 004472f..a808aef 100644
+--- a/plugins/remove-with-leaves/remove-with-leaves.py
++++ b/plugins/remove-with-leaves/remove-with-leaves.py
+@@ -42,7 +42,7 @@ remove_always = False
+ 
+ 
+ def _requires_this_package(rpmdb, pkg):
+-    if _requires_cache.has_key(pkg):
++    if pkg in _requires_cache:
+         return _requires_cache[pkg]
+         
+     requirers = {}
+diff --git a/plugins/upgrade-helper/upgrade-helper.py b/plugins/upgrade-helper/upgrade-helper.py
+index fd76c4f..9aa05f0 100644
+--- a/plugins/upgrade-helper/upgrade-helper.py
++++ b/plugins/upgrade-helper/upgrade-helper.py
+@@ -68,11 +68,11 @@ def parse_xml(xmlfile):
+             child_name = ns_cleanup(child.tag)
+             thisarch = myarch
+             if child_name == 'removespec':
+-                if child.attrib.has_key('on_arch'):
++                if 'on_arch' in child.attrib:
+                     thisarch = child.attrib.get('on_arch')
+-                if child.attrib.has_key('pkgmatch'):
++                if 'pkgmatch' in child.attrib:
+                     thismatch = child.attrib.get('pkgmatch')
+-                    if results.has_key(thisarch):
++                    if thisarch in results:
+                         if thismatch not in results[thisarch]:
+                             results[thisarch].append(thismatch)
+                         else:
+@@ -89,7 +89,7 @@ def stuff_to_remove(repos):
+     #  return them as the toremove list
+ 
+     for repo in repos.listEnabled():
+-        if repo.repoXML.repoData.has_key('cleanup'):
++        if 'cleanup' in repo.repoXML.repoData:
+             trf = repo.retrieveMD('cleanup')
+             tr_dict = parse_xml(trf)
+             # prune out things like *, ?, *.*, *.*.*.*.*
+diff --git a/repo-graph.py b/repo-graph.py
+index e771874..bb901a8 100755
+--- a/repo-graph.py
++++ b/repo-graph.py
+@@ -69,7 +69,7 @@ class yumQuiet(yum.YumBase):
+             for r in pkg.returnPrco('requires'):
+                 reqname = r[0]
+                 if reqname.startswith('rpmlib'): continue
+-                if prov.has_key(reqname):
++                if reqname in prov:
+                     provider = prov[reqname]
+                     cached += 1
+                 else:
+@@ -83,7 +83,7 @@ class yumQuiet(yum.YumBase):
+                     prov[reqname] = provider
+                 if provider == pkg.name:
+                     xx[provider] = None
+-                if xx.has_key(provider) or provider in skip:
++                if provider in xx or provider in skip:
+                     continue
+                 else:
+                     xx[provider] = None
+diff --git a/repo-rss.py b/repo-rss.py
+index f395089..845c65e 100755
+--- a/repo-rss.py
++++ b/repo-rss.py
+@@ -45,7 +45,7 @@ class YumQuiet(yum.YumBase):
+         for po in avail:
+             ftime = int(po.returnSimple('filetime'))
+             if ftime > recentlimit:
+-                if not ftimehash.has_key(ftime):
++                if ftime not in ftimehash:
+                     ftimehash[ftime] = [po]
+                 else:
+                     ftimehash[ftime].append(po)
+diff --git a/repoclosure.py b/repoclosure.py
+index 9bfc007..d9a94d7 100755
+--- a/repoclosure.py
++++ b/repoclosure.py
+@@ -153,7 +153,7 @@ class RepoClosure(yum.YumBase):
+                 if req.startswith('rpmlib'): continue # ignore rpmlib deps
+             
+                 ver = self.evrTupletoVer((reqe, reqv, reqr))
+-                if resolved.has_key((req,flags,ver)):
++                if (req,flags,ver) in resolved:
+                     continue
+                 try:
+                     resolve_sack = self.whatProvides(req, flags, ver)
+@@ -161,7 +161,7 @@ class RepoClosure(yum.YumBase):
+                     pass
+             
+                 if len(resolve_sack) < 1:
+-                    if not unresolved.has_key(pkg):
++                    if pkg not in unresolved:
+                         unresolved[pkg] = []
+                     unresolved[pkg].append((req, flags, ver))
+                     continue
+@@ -176,7 +176,7 @@ class RepoClosure(yum.YumBase):
+                     if resolved_by_newest:                    
+                         resolved[(req,flags,ver)] = 1
+                     else:
+-                        if not unresolved.has_key(pkg):
++                        if pkg not in unresolved:
+                             unresolved[pkg] = []
+                         unresolved[pkg].append((req, flags, ver))                        
+                         
+diff --git a/repodiff.py b/repodiff.py
+index 5b547c0..ac1865e 100755
+--- a/repodiff.py
++++ b/repodiff.py
+@@ -184,7 +184,7 @@ def main(args):
+     if ygh.remove:
+         for pkg in sorted(ygh.remove):
+             print 'Removed package %s' % pkg.name
+-            if ygh.obsoleted.has_key(pkg):
++            if pkg in ygh.obsoleted:
+                 print 'Obsoleted by %s' % ygh.obsoleted[pkg]
+             remove_sizechange += (int(pkg.size))
+                 
+diff --git a/repomanage.py b/repomanage.py
+index 759bf30..aeff9e5 100755
+--- a/repomanage.py
++++ b/repomanage.py
+@@ -158,11 +158,11 @@ def main(args):
+         (n,a,e,v,r) = pkgtuple
+         del hdr
+         
+-        if not pkgdict.has_key((n,a)):
++        if (n,a) not in pkgdict:
+             pkgdict[(n,a)] = []
+         pkgdict[(n,a)].append((e,v,r))
+         
+-        if not verfile.has_key(pkgtuple):
++        if pkgtuple not in verfile:
+             verfile[pkgtuple] = []
+         verfile[pkgtuple].append(pkg)
+         
+diff --git a/repoquery.py b/repoquery.py
+index eb524f3..76b1178 100755
+--- a/repoquery.py
++++ b/repoquery.py
+@@ -146,7 +146,7 @@ class pkgQuery:
+         if len(tmp) > 1:
+             item = tmp[0]
+             conv = tmp[1]
+-            if convertmap.has_key(conv):
++            if conv in convertmap:
+                 convert = convertmap[conv]
+             else:
+                 raise queryError("Invalid conversion: %s" % conv)
+@@ -168,7 +168,7 @@ class pkgQuery:
+         return self.fmt_queryformat()
+ 
+     def doQuery(self, method, *args, **kw):
+-        if std_qf.has_key(method):
++        if method in std_qf:
+             self.qf = std_qf[method]
+             return self.fmt_queryformat()
+         elif hasattr(self, "fmt_%s" % method):
+@@ -295,7 +295,7 @@ class instPkgQuery(pkgQuery):
+         self.classname = 'installed pkg'
+ 
+     def __getitem__(self, item):
+-        if self.tagmap.has_key(item):
++        if item in self.tagmap:
+             return self.pkg.tagByName(self.tagmap[item])
+         else:
+             return pkgQuery.__getitem__(self, item)
+diff --git a/reposync.py b/reposync.py
+index 5c8ee32..b66e927 100755
+--- a/reposync.py
++++ b/reposync.py
+@@ -222,7 +222,7 @@ def main():
+                 download_set[rpmname] = 1
+ 
+             for pkg in current_pkgs:
+-                if download_set.has_key(pkg):
++                if pkg in download_set:
+                     continue
+ 
+                 if not opts.quiet:
+diff --git a/repotrack.py b/repotrack.py
+index 35b8375..1c7158a 100755
+--- a/repotrack.py
++++ b/repotrack.py
+@@ -214,9 +214,8 @@ def main():
+                     del this_sack
+ 
+                 for res in pkg_list:
+-                    if res is not None:
+-                        if not unprocessed_pkgs.has_key(res.pkgtup):
+-                            unprocessed_pkgs[res.pkgtup] = res
++                    if res is not None and res.pkgtup not in unprocessed_pkgs:
++                        unprocessed_pkgs[res.pkgtup] = res
+     
+     
+     
+diff --git a/yum-debug-dump.py b/yum-debug-dump.py
+index f280d61..0ef90b2 100644
+--- a/yum-debug-dump.py
++++ b/yum-debug-dump.py
+@@ -128,7 +128,7 @@ class YumDebugDump(yum.YumBase):
+                 if req.startswith('rpmlib'): 
+                     continue # ignore rpmlib deps
+ 
+-                if not providers.has_key((req,rflags,ver)):
++                if (req,rflags,ver) not in providers:
+                     resolve_sack = self.rpmdb.whatProvides(req,rflags,ver)
+                 else:
+                     resolve_sack = providers[(req,rflags,ver)]
+-- 
+1.6.6.1
+
+
+From 39e3f286c7bb5d09f1440e2a50dd21d0c1603b49 Mon Sep 17 00:00:00 2001
+From: Dennis Gregorovic <dgregor@redhat.com>
+Date: Wed, 31 Mar 2010 15:00:54 -0400
+Subject: [PATCH 13/24] Include all packages listed in the pkgonly arg
+
+---
+ repoclosure.py |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/repoclosure.py b/repoclosure.py
+index d9a94d7..4c8cfa6 100755
+--- a/repoclosure.py
++++ b/repoclosure.py
+@@ -146,7 +146,7 @@ class RepoClosure(yum.YumBase):
+             pkgs = filter(lambda x: x.arch == 'src', pkgs)
+ 
+         if self.pkgonly:
+-            pkgs = filter(lambda x: x.name == self.pkgonly[0], pkgs)
++            pkgs = filter(lambda x: x.name in self.pkgonly, pkgs)
+ 
+         for pkg in pkgs:
+             for (req, flags, (reqe, reqv, reqr)) in pkg.returnPrco('requires'):
+-- 
+1.6.6.1
+
+
+From 267c33dd4c50ea9844f3720832c6c65a623d7b4c Mon Sep 17 00:00:00 2001
+From: Dennis Gregorovic <dgregor@redhat.com>
+Date: Wed, 31 Mar 2010 15:18:35 -0400
+Subject: [PATCH 14/24] Add a --group flag to filter packages by comps group
+
+---
+ repoclosure.py |   20 +++++++++++++++++---
+ 1 files changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/repoclosure.py b/repoclosure.py
+index 4c8cfa6..88a6adb 100755
+--- a/repoclosure.py
++++ b/repoclosure.py
+@@ -63,6 +63,8 @@ def parseArgs():
+                       help="specify repoid & paths of additional repositories - unique repoid and path required, can be specified multiple times. Example. --repofrompath=myrepo,/path/to/repo")
+     parser.add_option("-p", "--pkg", action="append",
+                       help="check closure for this package only")
++    parser.add_option("-g", "--group", action="append",
++                      help="check closure for packages in this group only")
+     (opts, args) = parser.parse_args()
+     return (opts, args)
+ 
+@@ -70,13 +72,14 @@ def parseArgs():
+ # so we have to do at least some API guarantee stuff.
+ class RepoClosure(yum.YumBase):
+     def __init__(self, arch=[], config="/etc/yum.conf", builddeps=False, pkgonly=None,
+-                 basearch=None):
++                 basearch=None, grouponly=None):
+         yum.YumBase.__init__(self)
+         if basearch:
+             self.preconf.arch = basearch
+         self.logger = logging.getLogger("yum.verbose.repoclosure")
+         self.builddeps = builddeps
+         self.pkgonly = pkgonly
++        self.grouponly = grouponly
+         self.doConfigSetup(fn = config,init_plugins=False)
+         self._rc_arches = arch
+ 
+@@ -145,8 +148,18 @@ class RepoClosure(yum.YumBase):
+         if self.builddeps:
+             pkgs = filter(lambda x: x.arch == 'src', pkgs)
+ 
+-        if self.pkgonly:
+-            pkgs = filter(lambda x: x.name in self.pkgonly, pkgs)
++        pkglist = self.pkgonly
++        if self.grouponly:
++            if not pkglist:
++                pkglist = []
++            for group in self.grouponly:
++                groupobj = self.comps.return_group(group)
++                if not groupobj:
++                    continue
++                pkglist.extend(groupobj.packages)
++
++        if pkglist:
++            pkgs = filter(lambda x: x.name in pkglist, pkgs)
+ 
+         for pkg in pkgs:
+             for (req, flags, (reqe, reqv, reqr)) in pkg.returnPrco('requires'):
+@@ -189,6 +202,7 @@ def main():
+                      config=opts.config, 
+                      builddeps=opts.builddeps,
+                      pkgonly=opts.pkg,
++                     grouponly=opts.group,
+                      basearch=opts.basearch)
+ 
+     if opts.repofrompath:
+-- 
+1.6.6.1
+
+
+From 8361ec1ae233a507a05c214fa4966e1f232e7a92 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ville=20Skytt=C3=A4?= <ville.skytta@iki.fi>
+Date: Thu, 1 Apr 2010 21:57:36 +0300
+Subject: [PATCH 15/24] Add repoclosure --group completion.
+
+---
+ yum-utils.bash |    6 +++++-
+ 1 files changed, 5 insertions(+), 1 deletions(-)
+
+diff --git a/yum-utils.bash b/yum-utils.bash
+index 308d82b..d1f13c9 100644
+--- a/yum-utils.bash
++++ b/yum-utils.bash
+@@ -142,10 +142,14 @@ _yu_repoclosure()
+             type _yum_list &>/dev/null && _yum_list all "$2"
+             return 0
+             ;;
++        -g|--group)
++            type _yum_grouplist &>/dev/null && _yum_grouplist "" "$2"
++            return 0
++            ;;
+     esac
+ 
+     COMPREPLY=( $( compgen -W '--help --config --arch --basearch --builddeps
+-        --repoid --tempcache --quiet --newest --repofrompath --pkg' \
++        --repoid --tempcache --quiet --newest --repofrompath --pkg --group' \
+             -- "$2" ) )
+ } &&
+ complete -F _yu_repoclosure -o filenames repoclosure repoclosure.py
+-- 
+1.6.6.1
+
+
+From 08975b3f4d0f31fe7af7a12443c227bfcbc9f6de Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ville=20Skytt=C3=A4?= <ville.skytta@iki.fi>
+Date: Fri, 2 Apr 2010 11:34:54 +0300
+Subject: [PATCH 16/24] Fix always_print_best_host conf setting.
+
+---
+ plugins/fastestmirror/fastestmirror.py |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/plugins/fastestmirror/fastestmirror.py b/plugins/fastestmirror/fastestmirror.py
+index 0701ef7..a8f1ee7 100644
+--- a/plugins/fastestmirror/fastestmirror.py
++++ b/plugins/fastestmirror/fastestmirror.py
+@@ -90,7 +90,7 @@ def init_hook(conduit):
+ 
+     """
+     global verbose, socket_timeout, hostfilepath, maxhostfileage, loadcache
+-    global maxthreads, exclude, prefer, downgrade_ftp
++    global maxthreads, exclude, prefer, downgrade_ftp, always_print_best_host
+     if hasattr(conduit, 'registerPackageName'):
+         conduit.registerPackageName("yum-plugin-fastestmirror")
+     verbose = conduit.confBool('main', 'verbose', default=False)
+-- 
+1.6.6.1
+
+
+From a33e328bd75f1c1828ee287df0582298f625fd93 Mon Sep 17 00:00:00 2001
+From: James Antill <james@and.org>
+Date: Thu, 8 Apr 2010 15:58:48 -0400
+Subject: [PATCH 17/24] Add yumdb man page, and yumdb copy command
+
+---
+ docs/Makefile  |    2 +-
+ docs/yumdb.8   |  126 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ yum-utils.spec |    1 +
+ yumdb.py       |   14 ++++++
+ 4 files changed, 142 insertions(+), 1 deletions(-)
+ create mode 100644 docs/yumdb.8
+
+diff --git a/docs/Makefile b/docs/Makefile
+index 7e81045..947498d 100644
+--- a/docs/Makefile
++++ b/docs/Makefile
+@@ -2,7 +2,7 @@ DOCS = repoquery package-cleanup repo-rss yumdownloader yum-builddep yum-changel
+        yum-list-data yum-filter-data yum-verify yum-utils yum-aliases yum-debug-dump yum-versionlock \
+        yum-groups-manager debuginfo-install repodiff yum-fs-snapshot
+ DOCS5 = yum-changelog.conf yum-versionlock.conf yum-fs-snapshot.conf
+-DOCS8 = yum-security yum-complete-transaction 
++DOCS8 = yum-security yum-complete-transaction yumdb
+ 
+ all:
+ 	echo "Nothing to do"
+diff --git a/docs/yumdb.8 b/docs/yumdb.8
+new file mode 100644
+index 0000000..7c39459
+--- /dev/null
++++ b/docs/yumdb.8
+@@ -0,0 +1,126 @@
++.\" yumdb command
++.TH "yumdb" "8" "8 April 2010" "James Antill" ""
++.SH "NAME"
++yumdb command
++.SH "SYNOPSIS"
++\fByumdb\fP [command] [packages ...]
++.SH "DESCRIPTION"
++.PP 
++This command is used to query and alter the yum database, which is a simple
++key value store used in conjunction with the rpm database. Any installed package
++can have arbitrary data in the yum database, however the main use case is to
++store extra data about packages as they are installed.
++.PP 
++yumdb \fIcommand\fPs are:
++.br 
++.IP "\fByumdb get <key> [pkg-wildcard]...\fP"
++.PP
++This command will get the value for the given key, limiting to any specified
++packages.
++.br 
++.IP "\fByumdb set <key> <value> [pkg-wildcard]..."
++.PP
++This command will set the value for the given key, to the given value, limiting
++to any specified packages.
++.br 
++.IP "\fByumdb del <key> [pkg-wildcard]...
++.PP
++This command will delete the given key, limiting to any specified packages.
++.br 
++.IP "\fByumdb rename <old-key> <new-key> [pkg-wildcard]...
++.PP
++This command will rename the given old-key, to the given new-key, limiting to
++any specified packages. If the old-key does not exist, nothing happens.
++.br 
++.IP "\fByumdb rename-force <old-key> <new-key> [pkg-wildcard]...
++.PP
++This command will rename the given old-key, to the given new-key, limiting to
++any specified packages. If the old-key does not exist, new-key is deleted.
++.br 
++.IP "\fByumdb copy <old-key> <new-key> [pkg-wildcard]...
++.PP
++This command will copy the given old-key, to the given new-key, limiting to
++any specified packages. If the old-key does not exist, nothing happens.
++.br 
++.IP "\fByumdb search <key> <wildcard>...
++.PP
++This command will search all packages for the given key, against any of the
++given wildcard values.
++.br 
++.IP "\fByumdb exist <key> [pkg-wildcard]...
++.PP
++This command will print any packages which have the given key, limiting to any
++specified packages.
++.br 
++.IP "\fByumdb unset <key> [pkg-wildcard]...
++.PP
++This command will print any packages which do not have the given key, limiting
++to any specified packages.
++.br 
++.IP "\fByumdb info [pkg-wildcard]...
++.PP
++This command will all the data stored in the yumdb, limiting to any specified
++packages.
++
++.SH "EXAMPLES"
++.PP
++List all the packages which don't have a from_repo key/value:
++.IP
++yumdb unset from_repo
++.PP
++List all the packages which were installed as dependencies:
++.IP
++yumdb search reason dep
++
++.SH "WELL KNOWN KEYS"
++.PP
++Note that there is no limit to the number of keys that can be created or what
++they may contain (for installed packages only). However this is a list of well
++known keys, and what they store.
++.nf
++.br 
++.IP "\fBchecksum_data
++.IP "\fBchecksum_type
++.PP
++These keys store the createrepo checksum, and it's type, of the available
++package yum installed. Note that these are used by "yum version" to calculate
++the rpmdb version.
++.br 
++.IP "\fBcommand_line
++.PP
++This key stores the entire command line, of the yum command (if it was called).
++.br 
++.IP "\fBfrom_repo
++.IP "\fBfrom_repo_revision
++.IP "\fBfrom_repo_timestamp
++.PP
++These keys take values from the available package yum installed, and store the
++repo id, it's revision and timestamp.
++.br 
++.IP "\fBreason
++.PP
++This key stores either "user" or "dep", currently. To mark if the user requested
++the package to be installed, or if it was brought in automatically as a
++dependency. Note that this is kept over updates.
++.br 
++.IP "\fBreleasever
++.PP
++This key stores the value of releasever, when the package was installed.
++.br 
++.IP "\fBinstallonly
++.PP
++If this attribute has the value "keep" then this package will not be
++removed automatically by the installonly process (and does not count towards
++the installonly_limit).
++
++.SH "SEE ALSO"
++.nf
++.I yum (8)
++.I rpm (8)
++.fi
++
++.SH "AUTHORS"
++.nf
++James Antill <james.antill@redhat.com>.
++.fi
++
+diff --git a/yum-utils.spec b/yum-utils.spec
+index 307a4e8..2f0b955 100644
+--- a/yum-utils.spec
++++ b/yum-utils.spec
+@@ -463,6 +463,7 @@ fi
+ %{_mandir}/man1/yum-debug-dump.1.*
+ %{_mandir}/man8/yum-complete-transaction.8.*
+ %{_mandir}/man1/yum-groups-manager.1.*
++%{_mandir}/man8/yumdb.8.*
+ %{_mandir}/man1/yumdownloader.1.*
+ 
+ %files -n yum-updateonboot
+diff --git a/yumdb.py b/yumdb.py
+index 365006e..38ba561 100755
+--- a/yumdb.py
++++ b/yumdb.py
+@@ -19,6 +19,7 @@ def setup_opts():
+       del           <key> [pkg-wildcard]...
+       rename        <key> <key> [pkg-wildcard]...
+       rename-force  <key> <key> [pkg-wildcard]...
++      copy          <key> <key> [pkg-wildcard]...
+       search        <key> <wildcard>...
+       exist?        <key> [pkg-wildcard]...
+       unset?        <key> [pkg-wildcard]...
+@@ -68,6 +69,19 @@ def run_cmd(yb, args, inshell=False):
+                 print " " * 4, ynkey, '=', getattr(pkg.yumdb_info, ynkey)
+             else:
+                 print " " * 4, ynkey, '<unset>'
++    elif args[0] == 'copy' and len(args) > 2:
++        args.pop(0)
++        yokey = args.pop(0)
++        ynkey = args.pop(0)
++        for pkg in sorted(yb.rpmdb.returnPackages(patterns=args)):
++            print pkg
++            if yokey in pkg.yumdb_info:
++                setattr(pkg.yumdb_info, ynkey, getattr(pkg.yumdb_info, yokey))
++                print " " * 4, ynkey, '=', getattr(pkg.yumdb_info, ynkey)
++            elif ynkey in pkg.yumdb_info:
++                print " " * 4, ynkey, '=', getattr(pkg.yumdb_info, ynkey)
++            else:
++                print " " * 4, ynkey, '<unset>'
+     elif args[0] in ['rename-f', 'rename-force'] and len(args) > 2:
+         args.pop(0)
+         yokey = args.pop(0)
+-- 
+1.6.6.1
+
+
+From b4c9ab9ecf7e602f78836ba34b1fc3994904e533 Mon Sep 17 00:00:00 2001
+From: James Antill <james@and.org>
+Date: Thu, 8 Apr 2010 16:02:55 -0400
+Subject: [PATCH 18/24] Use the yum configured cachedir value, in fastestmirror
+
+---
+ plugins/fastestmirror/fastestmirror.conf |    4 +++-
+ plugins/fastestmirror/fastestmirror.py   |    6 ++++--
+ 2 files changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/plugins/fastestmirror/fastestmirror.conf b/plugins/fastestmirror/fastestmirror.conf
+index 32ecec4..c6db0d8 100644
+--- a/plugins/fastestmirror/fastestmirror.conf
++++ b/plugins/fastestmirror/fastestmirror.conf
+@@ -3,7 +3,9 @@ enabled=1
+ verbose=0
+ always_print_best_host = true
+ socket_timeout=3
+-hostfilepath=/var/cache/yum/timedhosts.txt
++#  Relative paths are relative to the cachedir (and so works for users as well
++# as root).
++hostfilepath=timedhosts.txt
+ maxhostfileage=10
+ maxthreads=15
+ #exclude=.gov, facebook
+diff --git a/plugins/fastestmirror/fastestmirror.py b/plugins/fastestmirror/fastestmirror.py
+index a8f1ee7..db2fede 100644
+--- a/plugins/fastestmirror/fastestmirror.py
++++ b/plugins/fastestmirror/fastestmirror.py
+@@ -14,7 +14,7 @@
+ #   enabled=1
+ #   verbose=1
+ #   socket_timeout=3
+-#   hostfilepath=/var/cache/yum/timedhosts
++#   hostfilepath=timedhosts
+ #   maxhostfileage=10
+ #   maxthreads=15
+ #   #exclude=.gov, facebook
+@@ -98,7 +98,9 @@ def init_hook(conduit):
+                                               default=True)
+     socket_timeout = conduit.confInt('main', 'socket_timeout', default=3)
+     hostfilepath = conduit.confString('main', 'hostfilepath',
+-            default='/var/cache/yum/timedhosts')
++            default='timedhosts')
++    if hostfilepath and hostfilepath[0] != '/':
++        hostfilepath = conduit._base.conf.cachedir + '/' + hostfilepath
+     maxhostfileage = conduit.confInt('main', 'maxhostfileage', default=10)
+     maxthreads = conduit.confInt('main', 'maxthreads', default=10)
+     exclude = conduit.confString('main', 'exclude', default=None)
+-- 
+1.6.6.1
+
+
+From 264a67e713827a086ceef13b163a46dc6f28acf4 Mon Sep 17 00:00:00 2001
+From: Seth Vidal <skvidal@fedoraproject.org>
+Date: Fri, 9 Apr 2010 17:01:16 -0400
+Subject: [PATCH 19/24] fixes https://bugzilla.redhat.com/show_bug.cgi?id=580343
+
+when we are dealing with compressed comps files just fetch the group
+not group_gz
+---
+ reposync.py |   45 +++++++++++++++++++++++----------------------
+ 1 files changed, 23 insertions(+), 22 deletions(-)
+
+diff --git a/reposync.py b/reposync.py
+index b66e927..4d70e30 100755
+--- a/reposync.py
++++ b/reposync.py
+@@ -110,7 +110,7 @@ def parseArgs():
+     parser.add_option("-p", "--download_path", dest='destdir', 
+         default=os.getcwd(), help="Path to download packages to: defaults to current dir")
+     parser.add_option("--norepopath", dest='norepopath', default=False, action="store_true",
+-	     help="Don't add the reponame to the download path. Can only be used when syncing a single repository (default is to add the reponame)")
++        help="Don't add the reponame to the download path. Can only be used when syncing a single repository (default is to add the reponame)")
+     parser.add_option("-g", "--gpgcheck", default=False, action="store_true",
+         help="Remove packages that fail GPG signature checking after downloading")
+     parser.add_option("-u", "--urls", default=False, action="store_true", 
+@@ -176,7 +176,7 @@ def main():
+         # enable the ones we like
+         for repo in myrepos:
+             repo.enable()
+-	
++
+     # --norepopath can only be sensibly used with a single repository:
+     if len(my.repos.listEnabled()) > 1 and opts.norepopath:
+         print >> sys.stderr, "Error: Can't use --norepopath with multiple repositories"
+@@ -238,29 +238,30 @@ def main():
+                     my.logger.error("Could not make repo subdir: %s" % e)
+                     my.closeRpmDB()
+                     sys.exit(1)
+-            try: # download random other metadata
+-                if opts.downloadcomps:
+-                    compsfile = repo.getGroups()
+-                    shutil.copyfile(compsfile,"%s/%s" % (local_repo_path,'comps.xml'))
+-            except yum.Errors.RepoMDError,e :
+-                if not opts.quiet:
+-                    my.logger.error("Unable to fetch metadata: %s" % e)
+ 
++            if opts.downloadcomps:
++                wanted_types = ['group']
++            
+             if opts.downloadmd:
+-                for ftype in repo.repoXML.fileTypes():
+-                    if ftype in ['primary', 'primary_db', 'filelists',
+-                                 'filelists_db', 'other', 'other_db']:
+-                        continue
+-                    if opts.downloadcomps and ftype == 'group':
+-                        continue
+-                    try:
+-                        resultfile = repo.retrieveMD(ftype)
+-                        basename  = os.path.basename(resultfile)
+-                        shutil.copyfile(resultfile, "%s/%s" % (local_repo_path, basename))
+-                    except yum.Errors.RepoMDError,e :
+-                        if not opts.quiet:
+-                            my.logger.error("Unable to fetch metadata: %s" % e)
++                wanted_types = repo.repoXML.fileTypes.keys()
++
++            for ftype in repo.repoXML.fileTypes():
++                if ftype in ['primary', 'primary_db', 'filelists',
++                             'filelists_db', 'other', 'other_db']:
++                    continue
++                if ftype not in wanted_types:
++                    continue
+ 
++                try:
++                    resultfile = repo.retrieveMD(ftype)
++                    basename  = os.path.basename(resultfile)
++                    if ftype == 'group' and opts.downloadcomps: # for compat with how --downloadcomps saved the comps file always as comps.xml
++                        basename = 'comps.xml'
++                    shutil.copyfile(resultfile, "%s/%s" % (local_repo_path, basename))
++                except yum.Errors.RepoMDError,e :
++                    if not opts.quiet:
++                        my.logger.error("Unable to fetch metadata: %s" % e)
++                
+         remote_size = 0
+         local_size  = 0
+         if not opts.urls:
+-- 
+1.6.6.1
+
+
+From 4f7fa956098ec985727c5d12e694ccb259a6f037 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ville=20Skytt=C3=A4?= <ville.skytta@iki.fi>
+Date: Sat, 10 Apr 2010 00:21:57 +0300
+Subject: [PATCH 20/24] Add copy to yumdb completions.
+
+---
+ yum-utils.bash |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/yum-utils.bash b/yum-utils.bash
+index d1f13c9..54c9ef8 100644
+--- a/yum-utils.bash
++++ b/yum-utils.bash
+@@ -242,7 +242,7 @@ _yu_yumdb()
+     esac
+ 
+     if [ $COMP_CWORD -le 1 ] ; then
+-        COMPREPLY=( $( compgen -W 'get set del rename rename-force search
++        COMPREPLY=( $( compgen -W 'get set del rename rename-force copy search
+             exist unset info shell --version --help --noplugins --config' \
+                 -- "$2" ) )
+     fi
+-- 
+1.6.6.1
+
+
+From 2e5b45d9c4e743f88b085587984a19cc009d282e Mon Sep 17 00:00:00 2001
+From: Michael Schwendt <mschwendt@gmail.com>
+Date: Tue, 13 Apr 2010 16:19:19 -0400
+Subject: [PATCH 21/24] Get the newer "same day" changelog entries in repodiff.
+
+Tided by by James.
+---
+ repodiff.py |   21 ++++++++++++++-------
+ 1 files changed, 14 insertions(+), 7 deletions(-)
+
+diff --git a/repodiff.py b/repodiff.py
+index ac1865e..ff67fe4 100755
+--- a/repodiff.py
++++ b/repodiff.py
+@@ -198,15 +198,22 @@ def main(args):
+             # for any newer clog in pkg
+             # print it
+             oldlogs = oldpkg.changelog
+-            oldlogs.sort()
+-            oldlogs.reverse()
+             if len(oldlogs):
+-                oldtime = oldlogs[0][0]
+-                clogdelta = []
++                #  Don't sort as that can screw the order up when time is the
++                # same.
++                oldtime    = oldlogs[-1][0]
++                oldauth    = oldlogs[-1][2]
++                oldcontent = oldlogs[-1][2]
+                 for (t, author, content) in  pkg.changelog:
+-                    if t > oldtime:
+-                        msg += "* %s %s\n%s\n\n" % (datetime.date.fromtimestamp(int(t)).strftime("%a %b %d %Y"),
+-                               to_unicode(author), to_unicode(content))
++                    if t < oldtime:
++                        break
++                    if ((t == oldtime) and (author == auth) and
++                        (content == oldcontent)):
++                        break
++                    tm = datetime.date.fromtimestamp(int(t))
++                    tm = tm.strftime("%a %b %d %Y")
++                    msg += "* %s %s\n%s\n\n" % (tm, to_unicode(author),
++                                                to_unicode(content))
+             if opts.size:
+                 sizechange = int(pkg.size) - int(oldpkg.size)
+                 total_sizechange += sizechange
+-- 
+1.6.6.1
+
+
+From 9afba990529f7b2381f907b5341a45a4e9eac08d Mon Sep 17 00:00:00 2001
+From: James Antill <james@and.org>
+Date: Tue, 13 Apr 2010 16:44:06 -0400
+Subject: [PATCH 22/24] Stupid typo fix
+
+---
+ repodiff.py |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/repodiff.py b/repodiff.py
+index ff67fe4..5f3d5b1 100755
+--- a/repodiff.py
++++ b/repodiff.py
+@@ -207,7 +207,7 @@ def main(args):
+                 for (t, author, content) in  pkg.changelog:
+                     if t < oldtime:
+                         break
+-                    if ((t == oldtime) and (author == auth) and
++                    if ((t == oldtime) and (author == oldauth) and
+                         (content == oldcontent)):
+                         break
+                     tm = datetime.date.fromtimestamp(int(t))
+-- 
+1.6.6.1
+
+
+From cb745dcbca766c7b1a185b938e8eff9792a1317a Mon Sep 17 00:00:00 2001
+From: James Antill <james@and.org>
+Date: Tue, 13 Apr 2010 18:05:05 -0400
+Subject: [PATCH 23/24]  Fix obsoletes processing in repodiff, also giant speedup. Compared output
+ both before and after and it was identical:
+
+1. Original with 3.2.27: 8 minutes 27 seconds
+
+2. Original with returnNewestByName() speedup: 1 minute 50 seconds.
+
+3. New repodiff with 3.2.27: 11 seconds.
+
+...tested with Updates/11 vs. Updates/12 on 2010-04-13.
+---
+ repodiff.py |   74 ++++++++++++++++++++++++++++++++++++----------------------
+ 1 files changed, 46 insertions(+), 28 deletions(-)
+
+diff --git a/repodiff.py b/repodiff.py
+index 5f3d5b1..475f599 100755
+--- a/repodiff.py
++++ b/repodiff.py
+@@ -20,6 +20,7 @@ import datetime
+ import os
+ import locale
+ from yum.i18n import to_unicode
++import time
+ 
+ from optparse import OptionParser
+ 
+@@ -59,42 +60,59 @@ class DiffYum(yum.YumBase):
+         remove = []        
+         modified = []
+         obsoleted = {} # obsoleted = by
+-        newsack = yum.packageSack.ListPackageSack()
+-        for repoid in self.dy_repos['new']:
+-            newsack.addList(self.pkgSack.returnPackages(repoid=repoid))
+-
+-        oldsack = yum.packageSack.ListPackageSack()
+-        for repoid in self.dy_repos['old']:
+-            oldsack.addList(self.pkgSack.returnPackages(repoid=repoid))
+-
+-        for pkg in newsack.returnNewestByName():
+-            tot = self.pkgSack.searchNevra(name=pkg.name)
+-            if len(tot) == 1: # it's only in new
+-                add.append(pkg)
+-            if len(tot) > 1:
+-                if oldsack.contains(name=pkg.name):
+-                    newest_old = oldsack.returnNewestByName(name=pkg.name)[0]
+-                    if newest_old.EVR != pkg.EVR:
+-                        modified.append((pkg, newest_old))
++
++        #  Originally we did this by setting up old and new repos. ... but as
++        # a faster way, we can just go through all the pkgs once getting the
++        # newest pkg with a repoid prefix of "old", dito. "new", and then
++        # compare those directly.
++        def _next_old_new(pkgs):
++            """ Returns latest pair of (oldpkg, newpkg) for each package
++                name. If that name doesn't exist, then it returns None for
++                that package. """
++            lastname = None
++            npkg = opkg = None
++            for pkg in sorted(pkgs):
++                if lastname is None:
++                    lastname = pkg.name
++                if lastname != pkg.name:
++                    yield opkg, npkg
++                    opkg = npkg = None
++                    lastname = pkg.name
++
++                if pkg.repo.id.startswith('old'):
++                    opkg = pkg
+                 else:
+-                    add.append(pkg)
++                    assert pkg.repo.id.startswith('new')
++                    npkg = pkg
++            if opkg is not None or npkg is not None: 
++                yield opkg, npkg
+ 
+-        for pkg in oldsack.returnNewestByName():
+-            if len(newsack.searchNevra(name=pkg.name)) == 0:
+-                remove.append(pkg)
++        for opkg, npkg in _next_old_new(self.pkgSack.returnPackages()):
++            if opkg is None:
++                add.append(npkg)
++            elif npkg is None:
++                remove.append(opkg)
++            elif not npkg.verEQ(opkg):
++                modified.append((npkg, opkg))
+ 
++        ao = []
++        for pkg in add:
++            if not pkg.obsoletes:
++                continue
++            ao.append(pkg)
+ 
++        #  Note that this _only_ shows something when you have an additional
++        # package obsoleting a removed package. If the obsoleted package is
++        # still there (somewhat "common") or the obsoleter is an update (dito)
++        # you get get hits here.
+         for po in remove:
+-            for newpo in add:
+-                foundit = 0
+-                for obs in newpo.obsoletes:
+-                    if po.inPrcoRange('provides', obs):
+-                        foundit = 1
+-                        obsoleted[po] = newpo
+-                        break
+-                if foundit:
++            # Remember: Obsoletes are for package names only.
++            poprovtup = (po.name, 'EQ', (po.epoch, po.ver, po.release))
++            for newpo in ao:
++                if po.inPrcoRange('obsoletes', poprovtup):
++                    obsoleted[po] = newpo
+                     break
+-        
++
+         ygh = yum.misc.GenericHolder()
+         ygh.add = add
+         ygh.remove = remove
+-- 
+1.6.6.1
+
+
+From 99cbe8d6dad9ca8543dedcc5c12bc0f9fdde200e Mon Sep 17 00:00:00 2001
+From: James Antill <james@and.org>
+Date: Tue, 13 Apr 2010 18:16:03 -0400
+Subject: [PATCH 24/24] Add message about archlist usage, to stop people being confused.
+
+---
+ docs/repodiff.1 |    2 ++
+ repodiff.py     |    4 ++++
+ 2 files changed, 6 insertions(+), 0 deletions(-)
+
+diff --git a/docs/repodiff.1 b/docs/repodiff.1
+index e1ffc3b..640b023 100644
+--- a/docs/repodiff.1
++++ b/docs/repodiff.1
+@@ -16,6 +16,8 @@ Add a repo. as an old repo.
+ Add a repo. as an new repo.
+ .IP "\fB\-\-archlist, -a\fP"
+ Add architectures to change the default from just comparing source packages.
++Note that if you want the same as a native
++"x86_64" architecture machine you need: x86_64,athlon,i686,i586,i486,i386,noarch
+ .IP "\fB\-\-size, -s\fP"
+ Ouput additional data about the size of the changes.
+ .SH "EXAMPLES"
+diff --git a/repodiff.py b/repodiff.py
+index 475f599..0a1c42f 100755
+--- a/repodiff.py
++++ b/repodiff.py
+@@ -239,6 +239,10 @@ def main(args):
+ 
+             print msg
+ 
++    if (not ygh.add and not ygh.remove and not ygh.modified and
++        not my.pkgSack.searchNevra(arch='src')):
++        print "** No 'src' pkgs in any repo. maybe see docs. on --archlist?"
++
+     print 'Summary:'
+     print 'Added Packages: %s' % len(ygh.add)
+     print 'Removed Packages: %s' % len(ygh.remove)
+-- 
+1.6.6.1
+
+commit 9c647a75528566c0abf7bf4d0ed8c8c03e6223a5
+Author: James Antill <james@and.org>
+Date:   Thu Apr 15 00:54:03 2010 -0400
+
+    Fix typo on obsoletes check, in repodiff
+
+diff --git a/repodiff.py b/repodiff.py
+index 0a1c42f..2810108 100755
+--- a/repodiff.py
++++ b/repodiff.py
+@@ -109,7 +109,7 @@ class DiffYum(yum.YumBase):
+             # Remember: Obsoletes are for package names only.
+             poprovtup = (po.name, 'EQ', (po.epoch, po.ver, po.release))
+             for newpo in ao:
+-                if po.inPrcoRange('obsoletes', poprovtup):
++                if newpo.inPrcoRange('obsoletes', poprovtup):
+                     obsoleted[po] = newpo
+                     break
+ 
+commit 007bf5d4fd3147b51390d7124e64b3e431c831a9
+Author: James Antill <james@and.org>
+Date:   Fri Apr 16 14:50:27 2010 -0400
+
+    Use the newest old changelog entry, not the oldest ... *sigh*
+
+diff --git a/repodiff.py b/repodiff.py
+index 2810108..bc2cbf7 100755
+--- a/repodiff.py
++++ b/repodiff.py
+@@ -219,9 +219,9 @@ def main(args):
+             if len(oldlogs):
+                 #  Don't sort as that can screw the order up when time is the
+                 # same.
+-                oldtime    = oldlogs[-1][0]
+-                oldauth    = oldlogs[-1][2]
+-                oldcontent = oldlogs[-1][2]
++                oldtime    = oldlogs[0][0]
++                oldauth    = oldlogs[0][2]
++                oldcontent = oldlogs[0][2]
+                 for (t, author, content) in  pkg.changelog:
+                     if t < oldtime:
+                         break
+commit 3d9cf740ee9c9c2fbf8e408fe0eb2d46c1a88a00
+Author: James Antill <james@and.org>
+Date:   Sun Apr 18 01:44:24 2010 -0400
+
+    One more fix for the changelog time comparison
+
+diff --git a/repodiff.py b/repodiff.py
+index bc2cbf7..805e3b0 100755
+--- a/repodiff.py
++++ b/repodiff.py
+@@ -225,8 +225,8 @@ def main(args):
+                 for (t, author, content) in  pkg.changelog:
+                     if t < oldtime:
+                         break
+-                    if ((t == oldtime) and (author == oldauth) and
+-                        (content == oldcontent)):
++                    if ((t == oldtime) and ((author != oldauth) or
++                                            (content != oldcontent)):
+                         break
+                     tm = datetime.date.fromtimestamp(int(t))
+                     tm = tm.strftime("%a %b %d %Y")

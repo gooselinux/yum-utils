@@ -1,0 +1,19 @@
+commit 51b15590fb549d9cd2996d49aa469ee7168577bf
+Author: James Antill <james@and.org>
+Date:   Thu May 20 15:25:08 2010 -0400
+
+    Remove exception from getFileList() and return an empty list, BZ 587288.
+
+diff --git a/repomanage.py b/repomanage.py
+index aeff9e5..96f0a2f 100755
+--- a/repomanage.py
++++ b/repomanage.py
+@@ -50,7 +50,7 @@ def getFileList(path, ext, filelist):
+         dir_list = os.listdir(path)
+     except OSError, e:
+         errorprint('Error accessing directory %s, %s' % (path, e.message))
+-        raise Error, 'Error accessing directory %s, %s' % (path, e.message)
++        return []
+         
+     for d in dir_list:
+         if os.path.isdir(path + '/' + d):

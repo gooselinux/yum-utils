@@ -1,0 +1,24 @@
+commit 0b31b91a89911fefe3db6b315348116be9f54fbb
+Author: James Antill <james@and.org>
+Date:   Wed Jul 14 11:05:03 2010 -0400
+
+    Fix some minor problems with return codes in updateonboot initscript
+
+diff --git a/updateonboot/yum-updateonboot.init b/updateonboot/yum-updateonboot.init
+index b63d951..143f266 100755
+--- a/updateonboot/yum-updateonboot.init
++++ b/updateonboot/yum-updateonboot.init
+@@ -92,9 +92,12 @@ case "$1" in
+ 	$0 stop
+ 	$0 start
+ 	;;
++  usage)
++        echo $"Usage: $0 {start|stop|restart|reload|status}"
++	;;
+   *)
+         echo $"Usage: $0 {start|stop|restart|reload|status}"
+-        exit 1
++        exit 2
+ esac
+ 
+ exit 0

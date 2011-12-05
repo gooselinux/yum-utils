@@ -1,0 +1,38 @@
+commit 492ed97a37650d75569b06d728541e72973c7328
+Author: James Antill <james@and.org>
+Date:   Sat May 15 20:20:07 2010 -0400
+
+    Fix follow_obsoletes=True, in versionlock.
+
+diff --git a/plugins/versionlock/versionlock.py b/plugins/versionlock/versionlock.py
+index 89a6b83..17e6ba9 100644
+--- a/plugins/versionlock/versionlock.py
++++ b/plugins/versionlock/versionlock.py
+@@ -170,14 +170,6 @@ def exclude_hook(conduit):
+         _version_lock_excluder_n.add(n)
+         _version_lock_excluder_nevr.add("%s-%s:%s-%s" % (n, e, v, r))
+ 
+-    if conduit.confBool('main', 'follow_obsoletes', default=False):
+-        #  If anything obsoletes something that we have versionlocked ... then
+-        # remove all traces of that too.
+-        for (pkgtup, instTup) in conduit._base.up.getObsoletesTuples():
+-            if instTup[0] not in _version_lock_excluder_n:
+-                continue
+-            _version_lock_excluder_n.add(pkgtup[0].lower())
+-
+     if not _version_lock_excluder_n:
+         return
+ 
+@@ -189,3 +181,12 @@ def exclude_hook(conduit):
+     ape(None, exid + str(2), 'mark.name.in', _version_lock_excluder_n)
+     ape(None, exid + str(3), 'wash.nevr.in', _version_lock_excluder_nevr)
+     ape(None, exid + str(4), 'exclude.marked')
++
++    if conduit.confBool('main', 'follow_obsoletes', default=False):
++        #  If anything obsoletes something that we have versionlocked ... then
++        # remove all traces of that too.
++        for (pkgtup, instTup) in conduit._base.up.getObsoletesTuples():
++            if instTup[0] not in _version_lock_excluder_n:
++                continue
++            # Pkgs. have been created by above.
++            conduit._base.getPackageObject(pkgtup).exclude()
